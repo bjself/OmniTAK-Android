@@ -111,6 +111,15 @@ class IconPackImporter(private val context: Context) {
                 continue
             }
             val dest = File(destDir, iconEntry.filename)
+            // Defense in depth behind IconsetPackParser.isSafeRelativePath:
+            // the resolved file must stay inside the pack directory.
+            val inside = runCatching {
+                dest.canonicalPath.startsWith(destDir.canonicalPath + File.separator)
+            }.getOrDefault(false)
+            if (!inside) {
+                Log.w(TAG, "Refusing to write outside pack dir: '${iconEntry.filename}'")
+                continue
+            }
             dest.parentFile?.mkdirs()
             dest.writeBytes(bytes)
             registeredIcons += ImportedIcon(name = iconEntry.name, filename = iconEntry.filename)

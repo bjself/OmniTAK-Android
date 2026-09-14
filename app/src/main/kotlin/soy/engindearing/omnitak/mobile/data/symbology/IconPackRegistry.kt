@@ -87,7 +87,17 @@ class IconPackRegistry(private val context: Context) {
             packIndex.remove(uid)
             if (removed) {
                 saveToDisk()
-                packDir(uid).deleteRecursively()
+                // Never delete outside iconpacks/: a persisted uid such as
+                // ".." would otherwise wipe the app's data dir.
+                val root = File(context.filesDir, "iconpacks")
+                val dir = packDir(uid)
+                if (IconsetPackParser.isSafeSegment(uid) &&
+                    dir.canonicalPath.startsWith(root.canonicalPath + File.separator)
+                ) {
+                    dir.deleteRecursively()
+                } else {
+                    Log.w(TAG, "Refusing to delete pack dir for unsafe uid '$uid'")
+                }
             }
             return removed
         }
