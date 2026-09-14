@@ -22,15 +22,16 @@ import org.junit.Test
  */
 class IconsetPackParserPathSafetyTest {
 
+    // Built by concatenation, not trimIndent(): a multi-line template value
+    // would defeat trimIndent and leave the XML declaration indented, which
+    // the parser rejects (that is a fixture bug, not a parser behaviour).
     private fun xml(uid: String, vararg filenames: String): String {
-        val icons = filenames.mapIndexed { i, f -> """<icon name="Icon$i" filename="$f"/>""" }
+        val icons = filenames.mapIndexed { i, f -> """  <icon name="Icon$i" filename="$f"/>""" }
             .joinToString("\n")
-        return """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <iconset uid="$uid" name="Pack" version="1">
-              $icons
-            </iconset>
-        """.trimIndent()
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+            "<iconset uid=\"$uid\" name=\"Pack\" version=\"1\">\n" +
+            icons + "\n" +
+            "</iconset>\n"
     }
 
     // ── uid ────────────────────────────────────────────────────────────────
