@@ -489,6 +489,8 @@ class OmniTAKApp : Application() {
      *  selects MeshCore. */
     val meshcore: MeshCoreManager by lazy {
         MeshCoreManager(this).also { mgr ->
+            // M6 — only our own PLI may move the MeshCore advert.
+            mgr.selfUidProvider = { cachedPrefs.value.selfUid.ifBlank { null } }
             mgr.cotSink = { event ->
                 val selfUid = cachedPrefs.value.selfUid
                 val selfCallsign = cachedPrefs.value.callsign

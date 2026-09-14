@@ -66,6 +66,13 @@ class MeshCoreManager(private val context: Context? = null) : MeshFrameworkManag
     @Volatile override var cotSink: ((CoTEvent) -> Unit)? = null
     @Volatile override var chatSink: ((ChatMessage) -> Unit)? = null
 
+    /**
+     * Supplies the operator's own CoT uid so [sendCoTOverMesh] can tell the
+     * local PLI apart from relayed contacts. Set by OmniTAKApp. Until it
+     * returns a value, no advert is sent (audit 2026-09-14, M6).
+     */
+    @Volatile var selfUidProvider: () -> String? = { null }
+
     /** Latest battery percent reported by the node, or -1. */
     @Volatile var batteryPercent: Int = -1
         private set
@@ -327,7 +334,14 @@ class MeshCoreManager(private val context: Context? = null) : MeshFrameworkManag
             Log.v(TAG, "sendCoTOverMesh: MeshCore GeoChat fan-out not in v1 scope — skipping")
             return false
         }
-        // Self/PLI position broadcast.
+        // Only the operator's OWN PLI may move this node's advert. The
+        // server->mesh relay hands us every relayable contact and marker; on
+        // MeshCore there is no way to carry a third-party position, so those
+        // are dropped rather than advertised as our location (M6).
+        if (!isSelfAdvertCandidate(event, selfUidProvider())) {
+            Log.v(TAG, "sendCoTOverMesh: ${event.uid} is not the local PLI — MeshCore cannot carry it, skipping")
+            return false
+        }
         val latLon = MeshCoreFrameCodec.buildSetAdvertLatLon(event.lat, event.lon, event.hae)
             ?: return false
         val c = client ?: return false
@@ -366,6 +380,10 @@ class MeshCoreManager(private val context: Context? = null) : MeshFrameworkManag
     }
 
     companion object {
+        /** True only for the operator's own non-chat position event. */
+        fun isSelfAdvertCandidate(event: CoTEvent, selfUid: String?): Boolean =
+            event.type != "b-t-f" && !selfUid.isNullOrBlank() && event.uid == selfUid
+
         private const val TAG = "MeshCoreManager"
         private const val POLL_INTERVAL_MS = 2_500L
     }
