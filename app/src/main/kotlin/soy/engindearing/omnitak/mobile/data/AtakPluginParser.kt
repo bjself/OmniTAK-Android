@@ -439,11 +439,14 @@ object AtakPluginParser {
     // region XML rendering / fallback ------------------------------------
 
     private fun renderDetailXml(d: ParsedDetail): String {
-        // Prefer the verbatim xmlDetail when the sender included one — it
-        // may already wrap <detail>...</detail> tags.
+        // Prefer the sender's xmlDetail when it is well formed — but never
+        // verbatim. It is authored by a mesh peer and the relay forwards
+        // rawXml to the TAK server, so re-serialize through
+        // CotDetailSanitizer (escapes, drops <marti>/<__serverdestination>)
+        // and fall back to the parsed fields when it does not parse
+        // (audit 2026-09-14, M5).
         d.xmlDetail?.takeIf { it.isNotBlank() }?.let { xml ->
-            val trimmed = xml.trim()
-            return if (trimmed.startsWith("<detail")) trimmed else "<detail>$trimmed</detail>"
+            CotDetailSanitizer.sanitize(xml)?.let { return it }
         }
 
         val inner = StringBuilder()
