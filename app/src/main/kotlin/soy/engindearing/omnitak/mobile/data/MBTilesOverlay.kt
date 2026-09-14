@@ -11,6 +11,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.UUID
@@ -145,10 +146,15 @@ object MBTilesServer {
     fun tileUrlTemplate(id: String): String? =
         if (port != 0) "http://127.0.0.1:$port/$id/{z}/{x}/{y}" else null
 
+    /** Address the listener is bound to; null until [start] succeeds. */
+    val bindAddress: InetAddress? get() = serverSocket?.inetAddress
+
     @Synchronized
     private fun start() {
         if (started) return
-        val ss = runCatching { ServerSocket(0) }.getOrNull() ?: return
+        // Loopback only: this is MapLibre's private tile feed, not a LAN
+        // service (audit 2026-09-14, M11). Backlog 50 is the JDK default.
+        val ss = runCatching { ServerSocket(0, 50, InetAddress.getLoopbackAddress()) }.getOrNull() ?: return
         serverSocket = ss
         port = ss.localPort
         started = true
@@ -163,6 +169,9 @@ object MBTilesServer {
     private fun handle(sock: Socket) {
         sock.use {
             runCatching {
+                // A client that connects and never sends a request line must
+                // not pin a pool thread forever.
+                it.soTimeout = 5_000
                 val reader = it.getInputStream().bufferedReader()
                 val line = reader.readLine() ?: return            // "GET /id/z/x/y HTTP/1.1"
                 val path = line.split(" ").getOrNull(1) ?: return
