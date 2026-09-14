@@ -33,13 +33,34 @@ class H264NalSplitter {
      *  code has been seen yet. */
     private var headerLen = 0
 
+    /** Bytes currently held waiting for the next start code. */
+    val bufferedBytes: Int get() = buf.size()
+
+    /** Count of in-progress NALs discarded for exceeding [MAX_NAL_BYTES]. */
+    var droppedOversize: Long = 0L
+        private set
+
     /**
      * Feed bytes from the network. Returns NAL unit payloads (no
      * start code prefix) that were finalized by this push.
      */
     fun push(bytes: ByteArray, offset: Int = 0, length: Int = bytes.size): List<ByteArray> {
         buf.write(bytes, offset, length)
-        return drain()
+        val out = drain()
+        // The socket is open to any LAN host: a stream that never sends
+        // another start code must not grow this buffer without bound
+        // (audit 2026-09-14, M9). Drop the runaway NAL and re-sync.
+        if (buf.size() > MAX_NAL_BYTES) {
+            droppedOversize++
+            buf.reset()
+            headerLen = 0
+        }
+        return out
+    }
+
+    companion object {
+        /** Largest single NAL we will buffer. A 4K IDR frame is well under 2 MiB. */
+        const val MAX_NAL_BYTES = 4 * 1024 * 1024
     }
 
     /** Drop all buffered state. Use on reconnect / stream restart. */
