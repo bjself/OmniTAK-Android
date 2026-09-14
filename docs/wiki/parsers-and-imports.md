@@ -27,7 +27,7 @@ Base package: `app/src/main/kotlin/soy/engindearing/omnitak/mobile/`.
 
 `uid`, `type`, `lat`, `lon` are required. Ingest adds `receivedAtMs` and `source` (`ContactStore.ingest`). Affiliation is the second dash token (`a-f-...` is FRIEND), battle dimension the third. `CoTAge` buckets freshness (fresh under 1 min, aging to 5 min, stale).
 
-GeoChat (`type=b-t-f`) is parsed separately by `ChatXml.parse` from `__chat@senderCallsign,chatroom,id`, `chatgrp@uid0,uid1`, `link@uid,parent_callsign`, `dest@callsign`, and `remarks`. Note `isFromSelf` is derived from the remote-supplied sender uid, and `parse` throws on malformed XML (no `runCatching`) while its caller in `ServerManager` does not catch.
+GeoChat (`type=b-t-f`) is parsed separately by `ChatXml.parse` from `__chat@senderCallsign,chatroom,id`, `chatgrp@uid0,uid1`, `link@uid,parent_callsign`, `dest@callsign`, and `remarks`. `parse` returns null on malformed XML. Parsed messages are never `isFromSelf` (only `ChatStore.markOutgoing` asserts ownership), and when a `selfUid` is supplied a frame from our own uid is dropped as an echo or spoof.
 
 All outbound envelopes go through `CotXml.buildEvent` (`data/CotXml.kt`), which escapes `uid`, `type`, `how` but not the timestamp attributes. `CotXml.escape` covers the five XML entities. `CotBuilders` (delete tombstones, rebuild with dest, UAS PLI) and `MilitaryReports.buildReportEvent` use it.
 
@@ -36,8 +36,8 @@ All outbound envelopes go through `CotXml.buildEvent` (`data/CotXml.kt`), which 
 | Flow | Path | User confirmation |
 |---|---|---|
 | Profile QR / `omnitak://profile?d=<base64url(gzip(json))>` | camera or in-app scan -> `ProfileQrCodec.decode` (gunzip capped at 64 KiB) -> `ImportPreviewDialog` -> `ConfigProfileStore.saveProfile` + `apply` (prefs written, servers merged without secrets, `allowUntrustedTls` forced false) | yes |
-| Enrollment link `tak://.../enroll?host=&username=&token=[&enrollport=][&trust=][&name=]` | `DeepLinkImport.parseEnrollLink` (token becomes password, `useTLS=true`, `trustSelfSigned` defaults **true**) -> `MainActivity.enrollFromDeepLink` or `ServerQrScanScreen.enrollAndAdd` -> `CSREnrollmentService.enroll` -> `.p12` + CA PEM into `CertVault` -> `ServerManager.addServer` -> immediate connect | none (toast only) |
-| Connect link `atak://...?host=&port=&tls|proto=[&username=&password=]` | `DeepLinkImport.parseServerConfig`; if credentials and TLS, goes to enrollment; else `addServer(toServer(cfg))` -> immediate connect. `useTLS` defaults to `port == 8089` | none |
+| Enrollment link `tak://.../enroll?host=&username=&token=[&enrollport=][&trust=][&name=]` | `DeepLinkImport.parseEnrollLink` (token becomes password, `useTLS=true`, `trustSelfSigned` false unless `trust=true`) -> `MainActivity.enrollFromDeepLink` or `ServerQrScanScreen.enrollAndAdd` -> `OmniTAKApp.pendingServerImport` -> `ServerImportConfirmDialog` -> `ServerOnboarding.addConfirmed` -> `CSREnrollmentService.enroll` -> `.p12` + CA PEM into `CertVault` -> `ServerManager.addServer` -> connect | yes (dialog shows endpoint, transport, username, warnings) |
+| Connect link `atak://...?host=&port=&tls|proto=[&username=&password=]` | `DeepLinkImport.parseServerConfig`; if credentials and TLS, goes to enrollment; else cert-less add. Both go through the same confirmation dialog. `useTLS` defaults to `port == 8089` | yes |
 | Manual Quick Connect (`EnrollServerScreen`) | same enroll call, `trustSelfSigned` defaults false with a red warning | form |
 | Manual Add (`AddServerScreen`) | form, optional `.p12` via `CertVault.import`, basic auth, mDNS prefill | form |
 | Data package sideload (`DataPackageBootstrap`) | zips in `getExternalFilesDir("import")` parsed for `server.pref` + `.p12`, added on launch | none |
@@ -55,7 +55,7 @@ All outbound envelopes go through `CotXml.buildEvent` (`data/CotXml.kt`), which 
 | MBTiles / GeoPackage | `MBTilesOverlayStore.importTileSet` -> copy to `filesDir/mbtiles/<uuid>` -> open read-only -> `MBTilesServer.register` | raster source at `http://127.0.0.1:<port>/<id>/{z}/{x}/{y}` |
 | Iconset zip (ATAK iconset) | `IconPackImporter.importStream` -> all entries in RAM -> `IconsetPackParser.parse(iconset.xml)` -> images written to `filesDir/iconpacks/<uid>/<filename>` -> `IconPackRegistry.register` | `packs.json`; resolved at render time via `usericon@iconsetpath = "<uid>/<file>"` |
 
-`uid` and `filename` from `iconset.xml` are used verbatim in file paths (path traversal, see security audit). `ProfileQrCodec.gunzip` is the one importer that caps inflated size; copy that pattern.
+`IconsetPackParser` refuses a pack whose `uid` is not a single safe path segment and drops icons whose `filename` is absolute or contains `..`; the importer and `IconPackRegistry.remove` also check canonical-path containment. `ProfileQrCodec.gunzip` is the one importer that caps inflated size; copy that pattern.
 
 ## Export
 

@@ -19,6 +19,35 @@ Specifically verified:
 
 The findings below are ordinary defects and design risks in a codebase that otherwise takes security seriously (Keystore-backed secrets, escaped XML everywhere, SRI on CDN scripts, sanitized cert file names, parameterized SQL).
 
+## Remediation status
+
+Updated 2026-09-14 after [PR #2](https://github.com/bjself/OmniTAK-Android/pull/2) merged into `main` of the fork (merge commit `4c2ce21`). Fork CI ran `assembleDebug` and `testDebugUnitTest` on the branch: 887 unit tests, all passing. Every fix landed with a regression test written before the change.
+
+| Finding | Status | Commit | Regression test |
+|---|---|---|---|
+| H1 zip-slip in icon-pack import | fixed | `178df47` | `IconsetPackParserPathSafetyTest` |
+| H2 protobuf `skipField` infinite loop | fixed | `5a57e7a` | `MeshtasticProtoParserSkipFieldTest` |
+| H3 unconfirmed deep-link server add | fixed | `b0cc838` | `DeepLinkImportTrustTest` |
+| H4 `set_channel` without PSK | fixed (verify on hardware) | `c1cc371` | `DevicePushPlannerTest` |
+| H5 MAVLink UDP peer re-targeting | fixed | `2703125` | `MavlinkPeerPolicyTest` |
+| M1 trust-all enrollment default | fixed | `b0cc838` | `DeepLinkImportTrustTest` |
+| M2 unguarded `ChatXml.parse` | fixed | `d8a5d47` | `ChatXmlMalformedTest` |
+| M3 chat self-spoof | fixed | `ec1381b` | `ChatXmlSelfSpoofTest` |
+| M4 DMs re-broadcast to mesh | fixed | `ad61f85` | `ChatMeshFanoutTest` |
+| M5 verbatim `xmlDetail` splice | fixed | `5dc56b4` | `CotDetailSanitizerTest` |
+| M6 MeshCore advert overwrite | fixed | `a5b2dfe` | `MeshCoreAdvertPolicyTest` |
+| M7 geofence coverage | open | | product decision |
+| M8 single-tap vehicle commands | open | | product decision |
+| M9 unbounded H.264 buffer | fixed | `482f118` | `H264NalSplitterBoundsTest` |
+| M10 ONVIF cleartext and credentials | open | | needs HTTPS option |
+| M11 tile server on all interfaces | fixed | `27d45b9` | `MBTilesServerBindTest` |
+| M12 tokens in logcat | fixed | `b0cc838` | `DeepLinkImportTrustTest` |
+| L1 to L17 | open | | not yet scheduled |
+| I1 Cesium Ion token in history | open | | revoke on the Ion dashboard (account action) |
+| I2 raw NUL byte in `CSREnrollmentService.kt` | open | | cosmetic |
+
+New code introduced by the fixes: `ServerOnboarding`, `ServerImportConfirmDialog`, `ServerImportPreview`, `DevicePushPlanner`, `MavlinkPeerPolicy`, `CotDetailSanitizer`, `ChatMeshFanout`, `IconsetPackParser.isSafeSegment` / `isSafeRelativePath`, `AdminMessageSerializer.buildSetPrimaryChannel` (replaces `buildSetChannel0Name`), `MeshtasticManager.DevicePushResult`. The per-subsystem wiki pages were updated to match.
+
 ## Findings
 
 Severity reflects impact to an operator using the app as intended. File paths are relative to `app/src/main/kotlin/soy/engindearing/omnitak/mobile/` unless noted.
@@ -26,26 +55,31 @@ Severity reflects impact to an operator using the app as intended. File paths ar
 ### High
 
 **H1. Zip-slip path traversal in icon-pack import; recursive delete of an attacker-chosen directory.**
+Status: **fixed** in `178df47` (PR #2).
 `domain/IconPackImporter.kt:103-115`, `data/symbology/IconPackRegistry.kt:90,153-154`, `data/symbology/IconsetPackParser.kt:141,148`.
 The destination is `File(filesDir, "iconpacks/$uid")` joined with `iconEntry.filename`, both taken verbatim from the untrusted `iconset.xml`. Neither is canonicalized or checked for `..`. A pack with `uid="../.."` and `filename="files/datastore/tak_servers.preferences_pb"` overwrites the server list with attacker bytes; `remove(uid)` then calls `deleteRecursively()` on the same traversed path. Icon packs are commonly shared team artifacts and are imported from the Settings file picker.
 Fix: reject `uid` and `filename` containing path separators or `..`, or require `dest.canonicalPath.startsWith(destDir.canonicalPath + File.separator)`.
 
 **H2. Infinite loop in the shared protobuf field skipper, triggerable by any mesh node.**
+Status: **fixed** in `5a57e7a` (PR #2).
 `data/MeshtasticProtoParser.kt:513-525`.
 `skipField` for wire type 2 computes `minOf(lenEnd + len.toInt(), buf.size)` with no check that the result is at or past `offset`. A varint whose low 32 bits are negative (for example `FA FF FF FF 0F`) moves the cursor backwards and the enclosing loop re-reads the same tag forever. Payload `7A FA FF FF FF 0F` in a portnum 3 Position does it. Every hand-rolled parser (`parseFromRadio`, `parseNodeInfo`, `parseMeshPacket`, `TakPacketParser`, `AtakPluginParser`, `AdminMessageParser`) uses this helper. Result: the frame collector spins at 100% CPU, all later mesh frames drop, battery drains, no crash surfaces to the user. `readLengthDelimited` and `ProtoReader.skip` already have the correct guard.
 Fix: `if (len.toInt() < 0 || lenEnd + len.toInt() < lenEnd) return buf.size`.
 
 **H3. Deep link or QR adds and auto-connects a TAK server with no confirmation; the device then streams position to it.**
+Status: **fixed** in `b0cc838` (PR #2).
 `MainActivity.kt:158-184,193-246`, `ui/screens/ServerQrScanScreen.kt:291-317`, `domain/ServerManager.kt:423-438`.
 `MainActivity` is exported with a BROWSABLE VIEW filter for `tak`, `atak`, `omnitak`. A web link, another app, an NFC tag, or the OS camera can deliver `atak://...?host=...` and the app calls `serverManager.addServer()`, which persists the server and connects immediately. `SelfPositionBroadcaster` then sends PPLI to every connected server every 30 s. The only feedback is a toast. The profile-import path does show `ImportPreviewDialog`; the server and enrollment paths do not. This mirrors ATAK behavior, but a confirmation sheet is cheap and removes a drive-by position-leak vector.
 Related: `MainActivity.kt:176,231` log the full URI at INFO, which for enrollment links includes the username and one-time token.
 
 **H4. "Push to device" sends a primary-channel `set_channel` with no PSK field.** Needs firmware verification.
+Status: **fixed** in `c1cc371` (PR #2).
 `domain/MeshtasticManager.kt:660-680`, `data/AdminMessageSerializer.kt:221-244`.
 `buildSetChannel0Name` encodes `Channel{index=0, settings{name}, role=PRIMARY}`. The comment says the PSK is "left at the firmware default", but the bytes carry no PSK. Meshtastic's `set_channel` replaces the whole channel struct, and a primary channel with an empty PSK means encryption disabled (the codebase itself documents "0 bytes = no crypto" in `MeshtasticChannelCodec.kt`). If the firmware behaves that way, one tap silently strips encryption from the operator's primary channel. The single-field `set_config` builders have the same replace-semantics risk for availability (region, rebroadcast mode).
 Fix: read the current channel via `get_channel_response` (already parsed, PSK currently discarded) and echo the PSK back in `set_channel`. Verify against a real radio.
 
 **H5. MAVLink UDP link re-targets to any host that sends a packet; no sysid pinning.**
+Status: **fixed** in `2703125` (PR #2).
 `data/uas/MavlinkConnection.kt:147,262-265,302-311`.
 The UDP socket binds an ephemeral port on all interfaces. Every received datagram updates `udpAddress:udpPort`, and the first HEARTBEAT from anyone sets the target sysid/compid. MAVLink signing is not used. A LAN host that learns the port (the app sends a HEARTBEAT every second) can inject telemetry that the app federates to the TAK server as the drone's position, and can redirect all outgoing commands, including mission uploads and the Follow-Me stream carrying the operator's GPS, to itself. The comment describes a one-time port learn; the code re-targets on every change.
 Fix: after connect, pin the peer address to the configured host (allow port learning only), filter `apply()` on the first-seen sysid, consider MAVLink 2 signing.
@@ -53,48 +87,60 @@ Fix: after connect, pin the peer address to the configured host (allow port lear
 ### Medium
 
 **M1. Deep-link and QR enrollment default to trust-all TLS and pin whatever CA the peer returns.**
+Status: **fixed** in `b0cc838` (PR #2).
 `data/DeepLinkImport.kt:41-45,163-165,242-244`, `data/CSREnrollmentService.kt:315-317`, `data/net/TakTls.kt:144-155`.
 `ImportedServerConfig.trustSelfSigned` defaults to true unless the link says `trust=ca|system|false|0|no`. The enrollment then uses `configureUntrusted()` (no cert validation, no hostname check), sends Basic-auth credentials over that channel, and persists the returned CA chain as the permanent pin. A network MITM during a legitimate QR onboarding captures the token and plants a rogue pin. The manual `EnrollServerScreen` correctly defaults the switch off with a warning. The `TakTls` contract comment ("callers must gate this behind an explicit, default-off operator choice") is violated by these two callers.
 
 **M2. Remote crash: `ChatXml.parse` is unguarded in the per-server receive collector.**
+Status: **fixed** in `d8a5d47` (PR #2).
 `data/ChatXml.kt:91-94`, `domain/ServerManager.kt:207-216,62`.
 `ChatXml.parse` is the first call on every received frame and has no try/catch. `XmlPullParserException` on a malformed frame propagates out of a coroutine launched in `CoroutineScope(SupervisorJob() + Dispatchers.Default)` with no `CoroutineExceptionHandler`, which on Android terminates the process. A rogue or compromised TAK server can crash the client with one malformed `<event`. The mesh path is protected; `CoTParser.parse` wraps itself in `runCatching`.
 
 **M3. Chat impersonation of self via spoofed sender UID.**
+Status: **fixed** in `ec1381b` (PR #2).
 `data/ChatXml.kt:122-177`, `domain/ChatStore.kt:98`, `domain/MeshChatNotifier.kt:67`.
 `isFromSelf` is computed from the remote-supplied `chatgrp uid0` / `link uid`. The self UID is broadcast in every PPLI, so any peer knows it. Over mesh (where `selfUid` is passed to the parser) a message with a foreign event uid but `uid0=<victim>` renders as the victim's own message, increments no unread count, and triggers no notification. Fix: set `isFromSelf` only in `markOutgoing`, never from parsed input.
 
 **M4. Private server chats are re-broadcast to the whole mesh.**
+Status: **fixed** in `ad61f85` (PR #2).
 `ui/screens/ChatScreen.kt:637-665`, `data/UserPrefs.kt:111`.
 After a GeoChat is sent to a server, if a mesh radio is connected and `broadcastOverMesh` (default true), the same text is wrapped as `GeoChat.<self>.All Chat Rooms.<id>` and sent with no recipient, regardless of whether the conversation is a 1:1 DM. Fix: gate on `convo.isGroup` or route DMs through the existing mesh DM path.
 
 **M5. Mesh-to-server relay forwards unauthenticated mesh CoT under attacker-chosen UIDs; one path splices attacker XML verbatim.**
+Status: **fixed** in `5dc56b4` (PR #2).
 `domain/MeshServerRelay.kt:83-90,175-185`, `data/TakPacketParser.kt:169-172`, `data/AtakPluginParser.kt:444-447`.
 With the gateway on (off by default), any mesh node can move any teammate's marker on the server by reusing their UID. The only filter is self-UID / self-callsign. `AtakPluginParser.renderDetailXml` inserts the sender's `Detail.xmlDetail` string into `rawXml` without re-serialization, and the relay prefers `rawXml`, so a mesh node can inject arbitrary `<detail>` children into what reaches the server. Mesh CoT is inherently unauthenticated and this mirrors the ATAK gateway; document the trust boundary and parse-then-reserialize `xmlDetail`.
 
 **M6. With the relay on and MeshCore selected, relayed server contacts overwrite the operator's own advert position.**
+Status: **fixed** in `a5b2dfe` (PR #2).
 `domain/MeshCoreManager.kt:321-337`, `domain/MeshServerRelay.kt:91-98`.
 `MeshCoreManager.sendCoTOverMesh` treats every non-chat event as the local node's own position (`SET_ADVERT_LATLON` + `SEND_SELF_ADVERT`). The relay calls it for every relayable server event, so MeshCore peers see other contacts' coordinates as the operator's location.
 
 **M7. Geofence is enforced only for "fly here"; the class comment claims it covers follow, pursue, and missions.**
+Status: **open**, product decision: which UAS command paths should share the fly-here geofence and terrain checks.
 `domain/UASManager.kt:123-125` vs `448-460`, `298-349`, `496-531`, `727-810`.
 A stated safety control does not exist for most command paths.
 
 **M8. Vehicle commands fire on a single tap.** Only E-STOP has a confirmation dialog. Mission uploads run MISSION_CLEAR_ALL first. `ui/screens/UASScreen.kt:449-462`, `ui/components/UasControlBar.kt:81-116`, `ui/screens/MapScreen.kt:1750-1811`. A UX trade-off for a ground station; noted because of H5.
+Status: **open**, product decision: confirmation UX for arm / takeoff / RTL / land / mission upload.
 
 **M9. Unbounded buffer growth in the raw H.264 UDP player.**
+Status: **fixed** in `482f118` (PR #2).
 `data/uas/H264NalSplitter.kt:40-52,86-105`, `data/uas/RawH264UdpPlayer.kt:57-63`.
 The player accepts datagrams from any source on `0.0.0.0:port`. After one start code, a stream that never sends another start code grows a `ByteArrayOutputStream` without bound, and `drain()` copies it on every push. Any LAN host can OOM the app while video is enabled.
 
 **M10. ONVIF: cleartext HTTP only, credentials injected into the RTSP URL, camera-controlled service URLs followed.**
+Status: **open**, needs an HTTPS option for ONVIF and a decision on credential handling in RTSP URLs.
 `data/onvif/OnvifClient.kt:42-44,126-139,154-172`.
 Service URLs are `http://` only. `getStreamUri` builds `rtsp://user:pass@...`, which ExoPlayer may present in Basic auth. `discoverServices` scrapes `<XAddr>` and redirects subsequent authenticated calls wherever the camera says, so a hostile camera can harvest the password. The password field has no visual masking. Nothing is logged. Bounded by the fact that the operator chose the endpoint and network security config blocks cleartext to non-loopback hosts for the SOAP calls.
 
 **M11. In-app tile server binds all interfaces, not loopback.**
+Status: **fixed** in `27d45b9` (PR #2).
 `data/MBTilesOverlay.kt:151`.
 `ServerSocket(0)` listens on `0.0.0.0` while the URL template and network security config assume `127.0.0.1`. Imported offline imagery is readable by LAN peers who guess the UUID, and the unbounded `newCachedThreadPool` with no `soTimeout` allows connection exhaustion. Fix: `ServerSocket(0, 50, InetAddress.getLoopbackAddress())` and set a socket timeout.
 
 **M12. Enrollment secret and server-config deep links logged at INFO.** `MainActivity.kt:176,231`. Fix: log host and name only.
+Status: **fixed** in `b0cc838` (PR #2).
 
 ### Low
 
@@ -130,16 +176,13 @@ Service URLs are `http://` only. `getStreamUri` builds `rtsp://user:pass@...`, w
 - **I10.** `configBundleUrl` remote-config described in `PREFERENCES.md` has no Android implementation; the doc is iOS-only or stale.
 - **I11.** Tests: `RasterImportInstrumentedTest` writes PNGs to `/sdcard/Pictures/omnitak`; `GeoTIFFParserTest` expects `/tmp/test_geotiff.tif`. Nothing from tests ships in `main`.
 
-## Recommended fix order
+## Remaining work
 
-1. H1 canonical-path check in `IconPackImporter` and `IconPackRegistry.remove`.
-2. H2 one-line guard in `MeshtasticProtoParser.skipField`; add a unit test with `7A FA FF FF FF 0F`.
-3. M2 wrap `ChatXml.parse` in `runCatching` (or add a `CoroutineExceptionHandler` to `ServerManager.scope`).
-4. H3 + M1 + M12: confirmation sheet for deep-link server add and enrollment, default `trustSelfSigned=false` for links, stop logging URIs.
-5. H4 echo the existing PSK in `set_channel`; verify on hardware.
-6. H5 pin MAVLink peer address and sysid.
-7. M3, M4, M5, M6, M11, M9 in any order.
-8. I1 revoke the historical Ion token.
+1. Revoke the historical Cesium Ion token (I1).
+2. Decide M7 and M8 (UAS geofence coverage and command confirmation) and M10 (ONVIF transport); implement once decided.
+3. Verify H4 on a real Meshtastic radio: rename the primary channel via Push to device after Refresh and confirm the PSK is unchanged.
+4. Work through L1 to L17, starting with L5 (disable DTD processing in every `XmlPullParser` factory) and L3 (cap inflated sizes in the file importers).
+5. Replace the literal NUL in `CSREnrollmentService.kt` with `\u0000` (I2).
 
 ## Complete list of network destinations
 

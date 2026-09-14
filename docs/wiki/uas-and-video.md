@@ -6,12 +6,12 @@ Base package: `app/src/main/kotlin/soy/engindearing/omnitak/mobile/`.
 
 | File | Role | Gotchas |
 |---|---|---|
-| `data/uas/MavlinkConnection.kt` | MAVLink 2 client on the dronefleet codec, UDP or TCP. Owns the socket, a 1 Hz GCS HEARTBEAT (sysid 255, comp 190), the read loop feeding `StateFlow<DroneState>`, `missionEvents` / `paramValues` shared flows, `sendCommand` (COMMAND_LONG), `uploadMission`, PX4 and ArduPilot mode decoding. | UDP socket is ephemeral and re-targets `udpAddress:udpPort` to whatever host last sent a packet; first HEARTBEAT from anyone sets sysid/compid. No MAVLink signing. UDP read buffer is 280 bytes, so bundled datagrams truncate. `disconnect()` resets state. |
+| `data/uas/MavlinkConnection.kt` | MAVLink 2 client on the dronefleet codec, UDP or TCP. Owns the socket, a 1 Hz GCS HEARTBEAT (sysid 255, comp 190), the read loop feeding `StateFlow<DroneState>`, `missionEvents` / `paramValues` shared flows, `sendCommand` (COMMAND_LONG), `uploadMission`, PX4 and ArduPilot mode decoding. | `MavlinkPeerPolicy` pins the peer address (port may be learned from it) and locks the sysid on the first non-GCS HEARTBEAT; other hosts and sysids are dropped and counted. No MAVLink signing. UDP read buffer is 280 bytes, so bundled datagrams truncate. `disconnect()` resets state and the lock. |
 | `data/uas/DroneState.kt` | Immutable telemetry snapshot. `isConnected()` = heartbeat under 5 s. `vehicleClass` from MAV_TYPE. Trail keeps 30 points, STATUSTEXT keeps last 8. | |
 | `data/uas/WaypointMission.kt` | `Waypoint`, `MissionPhase`, `WaypointMission`, `MissionStore` (StateFlow). Altitude 0.0 means "use cruise altitude". | |
 | `data/uas/CruiseAltitude.kt` | AGL/MSL frame and `toMsl(homeAltMsl)`. | |
 | `data/uas/VideoSource.kt` | Sealed `None / Rtsp(url) / RawH264Udp(port) / MpegTsUdp(port)` with port validation. | |
-| `data/uas/RawH264UdpPlayer.kt` | Binds UDP `0.0.0.0:port` with SO_REUSEADDR, splits Annex B NALs, parses SPS/PPS with its own bit reader, configures `MediaCodec` AVC low-latency, renders to a Surface. | Accepts datagrams from any source. Buffer can grow without bound if a start code is never followed by another (see security audit). |
+| `data/uas/RawH264UdpPlayer.kt` | Binds UDP `0.0.0.0:port` with SO_REUSEADDR, splits Annex B NALs, parses SPS/PPS with its own bit reader, configures `MediaCodec` AVC low-latency, renders to a Surface. | Accepts datagrams from any source. `H264NalSplitter` drops any in-progress NAL over 4 MiB and re-syncs. |
 | `data/uas/H264NalSplitter.kt` | Stateful Annex B start-code splitter returning NAL payloads without start codes. | `drain()` copies the whole buffer on every push. |
 | `data/uas/TerrainSampler.kt` | Terrain-RGB DEM sampler on a WGS84 2x2^z grid (not web mercator), z12 with z5 fallback, LRU bitmap cache, serialized fetches. Source is a hard-coded CloudFront distribution said to be TAK Terrain. | Provenance of the host is not verifiable from the repo. |
 | `domain/UASManager.kt` | One per drone. Owns `MavlinkConnection`, `MissionStore`, cruise altitude, geofence radius, failsafe param reads, video source, follow/pursue streamer, terrain-below-drone loop, battery alert synthesizer, the 1 Hz CoT PLI pump, and every vehicle command. | Geofence check exists only in `flyTo()`; follow, pursue, orbit, and mission uploads do not check it even though the class comment says they do. Mission upload runs MISSION_CLEAR_ALL first. |
@@ -54,6 +54,6 @@ CoT federation: `cotPumpLoop` emits `CotBuilders.buildUasPliEvent` once per seco
 
 ## Gotchas for agents
 
-- Treat every inbound MAVLink message as untrusted. If you touch `MavlinkConnection`, prefer pinning the peer address after connect and filtering on the first-seen sysid.
+- Treat every inbound MAVLink message as untrusted. Keep `MavlinkPeerPolicy` in the path of every new receive branch.
 - Any new autonomous command path should go through the same geofence and terrain checks that `flyTo()` uses.
 - Do not log RTSP URLs from `OnvifClient.getStreamUri`; they carry credentials.

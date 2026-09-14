@@ -10,7 +10,7 @@ Base package: `app/src/main/kotlin/soy/engindearing/omnitak/mobile/`.
 - Write with Y flipped to TMS (`MbtilesRow.xyzToTms = 2^z - 1 - y`) via `TileCacheWriter`.
 - `writeMetadata(region)`, register with `MBTilesServer`, persist `regions.json` (kotlinx.serialization).
 
-Serving reuses `MBTilesDb` / `MBTilesServer` in `data/MBTilesOverlay.kt`: a tiny HTTP server on an ephemeral port answering `GET /<id>/{z}/{x}/{y}` from registered databases. Template `http://127.0.0.1:<port>/offline-<id>/{z}/{x}/{y}`; cleartext to loopback is allowed by `network_security_config.xml`. Note the socket is created with `ServerSocket(0)` and therefore binds all interfaces, not just loopback. `OfflineTilePolicy.decide()` puts cached layers on top when `networkAvailable()` is false.
+Serving reuses `MBTilesDb` / `MBTilesServer` in `data/MBTilesOverlay.kt`: a tiny HTTP server on an ephemeral port answering `GET /<id>/{z}/{x}/{y}` from registered databases. Template `http://127.0.0.1:<port>/offline-<id>/{z}/{x}/{y}`; cleartext to loopback is allowed by `network_security_config.xml`. The socket binds the loopback address only and each connection has a 5 s read timeout. `OfflineTilePolicy.decide()` puts cached layers on top when `networkAvailable()` is false.
 
 The UI warns above 50,000 tiles but does not block. OSM's tile usage policy forbids bulk downloading; use OpenTopoMap or Esri for large regions or expect a blocked UA.
 
