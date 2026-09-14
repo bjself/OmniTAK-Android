@@ -565,6 +565,14 @@ class OmniTAKApp : Application() {
      */
     val pendingProfileImport = MutableStateFlow<soy.engindearing.omnitak.mobile.data.ConfigProfile?>(null)
 
+    /**
+     * A server parsed from a deep link / QR that has not yet been confirmed
+     * by the user. AppNav shows ServerImportConfirmDialog; only its confirm
+     * button hands the config to ServerOnboarding.addConfirmed. Nothing is
+     * added or connected until then (audit 2026-09-14, H3).
+     */
+    val pendingServerImport = MutableStateFlow<soy.engindearing.omnitak.mobile.data.ImportedServerConfig?>(null)
+
     /** Profile store — manages named config snapshots + QR sync. */
     val configProfileStore: ConfigProfileStore by lazy {
         ConfigProfileStore(
