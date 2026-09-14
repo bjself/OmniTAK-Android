@@ -149,6 +149,11 @@ object ChatXml {
 
         if (type != "b-t-f") return null
         val finalSenderUid = senderUid ?: inferSenderUidFromEventUid(eventUid) ?: return null
+        // A frame claiming to be from us is either an echo of our own message
+        // (mesh rebroadcast) or a spoof; either way it must not be rendered
+        // as ours. Ownership is asserted only by ChatStore.markOutgoing
+        // (audit 2026-09-14, M3).
+        if (selfUid != null && finalSenderUid == selfUid) return null
         val finalSenderCallsign = senderCallsign ?: return null
         val finalText = remarks ?: return null
 
@@ -180,7 +185,7 @@ object ChatXml {
             text = finalText,
             timeIso = eventTime ?: CotXml.isoMillis(),
             status = ChatStatus.RECEIVED,
-            isFromSelf = selfUid != null && finalSenderUid == selfUid,
+            isFromSelf = false,
             serverId = serverId,
         )
     }
