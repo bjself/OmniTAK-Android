@@ -21,9 +21,15 @@ class RegionDownloaderTest {
 
     private fun bbox() = BoundingBox(north = 47.62, south = 47.60, east = -122.32, west = -122.34)
 
-    /** A sink that records every written XYZ-equivalent tile. */
+    /**
+     * A sink that records every written XYZ-equivalent tile. Backed by a
+     * [java.util.concurrent.ConcurrentHashMap]: [RegionDownloader] fetches
+     * tiles concurrently on [kotlinx.coroutines.Dispatchers.IO] (real
+     * threads, not `runTest`'s virtual scheduler), so a plain `HashMap` here
+     * would race and silently drop writes under load.
+     */
     private class CountingSink : TileSink {
-        val store = HashMap<Triple<Int, Int, Int>, ByteArray>()
+        val store = java.util.concurrent.ConcurrentHashMap<Triple<Int, Int, Int>, ByteArray>()
         override fun put(z: Int, column: Int, tmsRow: Int, data: ByteArray) {
             store[Triple(z, column, tmsRow)] = data
         }
