@@ -23,11 +23,47 @@ sealed interface AdminResponse {
     data class DeviceConfig(val role: MeshRole?) : AdminResponse
     data class PositionConfig(val broadcastSecs: Int) : AdminResponse
     data class LoraConfig(val preset: MeshChannelPreset?) : AdminResponse
-    data class Channel(val index: Int, val name: String, val role: Int) : AdminResponse {
+    /**
+     * One channel slot as reported by the radio. [psk] is kept so a later
+     * `set_channel` can echo it back: Meshtastic replaces the whole Channel
+     * struct on write and an empty primary PSK disables encryption
+     * (audit 2026-09-14, H4). Never log or persist [psk].
+     */
+    class Channel(
+        val index: Int,
+        val name: String,
+        val role: Int,
+        val psk: ByteArray = ByteArray(0),
+        val uplinkEnabled: Boolean = false,
+        val downlinkEnabled: Boolean = false,
+    ) : AdminResponse {
         /** firmware Channel.Role enum: DISABLED=0, PRIMARY=1, SECONDARY=2. */
         val isPrimary: Boolean get() = role == 1
         val isSecondary: Boolean get() = role == 2
         val isDisabled: Boolean get() = role == 0
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is Channel) return false
+            return index == other.index && name == other.name && role == other.role &&
+                psk.contentEquals(other.psk) &&
+                uplinkEnabled == other.uplinkEnabled && downlinkEnabled == other.downlinkEnabled
+        }
+
+        override fun hashCode(): Int {
+            var h = index
+            h = 31 * h + name.hashCode()
+            h = 31 * h + role
+            h = 31 * h + psk.contentHashCode()
+            h = 31 * h + uplinkEnabled.hashCode()
+            h = 31 * h + downlinkEnabled.hashCode()
+            return h
+        }
+
+        /** PSK deliberately redacted — this string reaches logcat. */
+        override fun toString(): String =
+            "Channel(index=$index, name='$name', role=$role, psk=${psk.size}B, " +
+                "uplink=$uplinkEnabled, downlink=$downlinkEnabled)"
     }
 }
 
@@ -175,7 +211,7 @@ object AdminMessageParser {
     private fun parseChannel(bytes: ByteArray): AdminResponse.Channel {
         var idx = 0
         var index = 0
-        var name = ""
+        var settings = ChannelSettingsFields()
         var role = 0
         while (idx < bytes.size) {
             val (tag, afterTag) = readVarint(bytes, idx) ?: break
@@ -191,7 +227,7 @@ object AdminMessageParser {
                 2 -> {
                     if (wire != 2) { idx = skipField(bytes, idx, wire); continue }
                     val sub = readLengthDelimited(bytes, idx) ?: break
-                    name = parseChannelSettingsName(sub.first)
+                    settings = parseChannelSettings(sub.first)
                     idx = sub.second
                 }
                 3 -> {
@@ -202,26 +238,56 @@ object AdminMessageParser {
                 else -> idx = skipField(bytes, idx, wire)
             }
         }
-        return AdminResponse.Channel(index = index, name = name, role = role)
+        return AdminResponse.Channel(
+            index = index,
+            name = settings.name,
+            role = role,
+            psk = settings.psk,
+            uplinkEnabled = settings.uplink,
+            downlinkEnabled = settings.downlink,
+        )
     }
 
-    /** ChannelSettings.name = field 3 (string). */
-    private fun parseChannelSettingsName(bytes: ByteArray): String {
+    private data class ChannelSettingsFields(
+        val psk: ByteArray = ByteArray(0),
+        val name: String = "",
+        val uplink: Boolean = false,
+        val downlink: Boolean = false,
+    )
+
+    /** ChannelSettings { 2 psk (bytes), 3 name (string), 5 uplink_enabled, 6 downlink_enabled }. */
+    private fun parseChannelSettings(bytes: ByteArray): ChannelSettingsFields {
         var idx = 0
+        var psk = ByteArray(0)
         var name = ""
+        var uplink = false
+        var downlink = false
         while (idx < bytes.size) {
             val (tag, afterTag) = readVarint(bytes, idx) ?: break
             val field = (tag shr 3).toInt()
             val wire = (tag and 0x7UL).toInt()
             idx = afterTag
-            if (field == 3 && wire == 2) {
-                val (s, after) = readString(bytes, idx) ?: break
-                name = s; idx = after
-            } else {
-                idx = skipField(bytes, idx, wire)
+            when {
+                field == 2 && wire == 2 -> {
+                    val (b, after) = readLengthDelimited(bytes, idx) ?: break
+                    psk = b; idx = after
+                }
+                field == 3 && wire == 2 -> {
+                    val (s, after) = readString(bytes, idx) ?: break
+                    name = s; idx = after
+                }
+                field == 5 && wire == 0 -> {
+                    val (v, after) = readVarint(bytes, idx) ?: break
+                    uplink = v != 0UL; idx = after
+                }
+                field == 6 && wire == 0 -> {
+                    val (v, after) = readVarint(bytes, idx) ?: break
+                    downlink = v != 0UL; idx = after
+                }
+                else -> idx = skipField(bytes, idx, wire)
             }
         }
-        return name
+        return ChannelSettingsFields(psk = psk, name = name, uplink = uplink, downlink = downlink)
     }
 
     /** User submessage: 2 long_name, 3 short_name. Returns (short, long). */

@@ -59,7 +59,11 @@ class AdminAddressingTest {
         val channel = MeshChannel(name = "OmniTAK", psk = ByteArray(16) { it.toByte() })
         return mapOf(
             "set_channel" to AdminMessageSerializer.buildSetChannel(myNodeNum, channel, index = 0),
-            "set_channel0_name" to AdminMessageSerializer.buildSetChannel0Name(myNodeNum, "OmniTAK"),
+            "set_primary_channel" to AdminMessageSerializer.buildSetPrimaryChannel(
+                myNodeNum,
+                "OmniTAK",
+                AdminResponse.Channel(index = 0, name = "Old", role = 1, psk = ByteArray(16) { it.toByte() }),
+            )!!,
             "set_owner" to AdminMessageSerializer.buildSetOwner(myNodeNum, "Pato Golf", "PATO"),
             "set_device_role" to AdminMessageSerializer.buildSetDeviceRole(myNodeNum, MeshRole.TAK),
             "set_rebroadcast_mode" to AdminMessageSerializer.buildSetRebroadcastMode(myNodeNum, RebroadcastMode.KNOWN_ONLY),

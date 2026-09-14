@@ -489,6 +489,8 @@ class OmniTAKApp : Application() {
      *  selects MeshCore. */
     val meshcore: MeshCoreManager by lazy {
         MeshCoreManager(this).also { mgr ->
+            // M6 — only our own PLI may move the MeshCore advert.
+            mgr.selfUidProvider = { cachedPrefs.value.selfUid.ifBlank { null } }
             mgr.cotSink = { event ->
                 val selfUid = cachedPrefs.value.selfUid
                 val selfCallsign = cachedPrefs.value.callsign
@@ -564,6 +566,14 @@ class OmniTAKApp : Application() {
      * survives an onNewIntent delivered to a resumed Activity.
      */
     val pendingProfileImport = MutableStateFlow<soy.engindearing.omnitak.mobile.data.ConfigProfile?>(null)
+
+    /**
+     * A server parsed from a deep link / QR that has not yet been confirmed
+     * by the user. AppNav shows ServerImportConfirmDialog; only its confirm
+     * button hands the config to ServerOnboarding.addConfirmed. Nothing is
+     * added or connected until then (audit 2026-09-14, H3).
+     */
+    val pendingServerImport = MutableStateFlow<soy.engindearing.omnitak.mobile.data.ImportedServerConfig?>(null)
 
     /** Profile store — manages named config snapshots + QR sync. */
     val configProfileStore: ConfigProfileStore by lazy {

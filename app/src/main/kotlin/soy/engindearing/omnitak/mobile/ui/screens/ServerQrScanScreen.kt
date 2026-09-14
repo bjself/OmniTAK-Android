@@ -59,15 +59,8 @@ import android.widget.Toast
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import soy.engindearing.omnitak.mobile.OmniTAKApp
-import soy.engindearing.omnitak.mobile.data.CSREnrollmentService
-import soy.engindearing.omnitak.mobile.data.ConnectionProtocol
 import soy.engindearing.omnitak.mobile.data.DeepLinkImport
-import soy.engindearing.omnitak.mobile.data.ImportedServerConfig
-import soy.engindearing.omnitak.mobile.data.TAKServer
 import soy.engindearing.omnitak.mobile.ui.theme.TacticalAccent
 import soy.engindearing.omnitak.mobile.ui.theme.TacticalBackground
 import java.util.concurrent.Executors
@@ -303,90 +296,11 @@ fun ServerEnrollScanRoute(onDone: () -> Unit) {
                 onDone()
                 return@ServerQrScanScreen
             }
-            if (enrollCfg.needsEnrollment) {
-                enrollAndAdd(context, app, enrollCfg)
-            } else {
-                app.serverManager.addServer(DeepLinkImport.toServer(enrollCfg))
-                Toast.makeText(
-                    context,
-                    "Added server: ${enrollCfg.name} (${enrollCfg.host}:${enrollCfg.port})",
-                    Toast.LENGTH_LONG,
-                ).show()
-            }
+            // Hand off to the confirmation dialog in AppNav; nothing is added
+            // or connected until the user confirms (audit 2026-09-14, H3).
+            app.pendingServerImport.value = enrollCfg
             onDone()
         },
         onDismiss = onDone,
     )
-}
-
-/**
- * Shared CSR enroll-and-add used by the in-app scanner. Same call shape as
- * MainActivity's deep-link enroll path and EnrollServerScreen — request a
- * signed client cert, then add (auto-connect) the server with the enrolled
- * .p12 + pinned CA wired up. Enrollment runs off the main thread; the user
- * gets toasts on start / success / failure.
- */
-private fun enrollAndAdd(
-    context: android.content.Context,
-    app: OmniTAKApp,
-    cfg: ImportedServerConfig,
-) {
-    Toast.makeText(context, "Enrolling with ${cfg.host}…", Toast.LENGTH_SHORT).show()
-    // #174 — run enrollment on the application scope, NOT a composition-scoped
-    // rememberCoroutineScope. The scanner route calls onDone() (popBackStack)
-    // immediately after kicking this off, which tears the scanner composable
-    // out of composition; a rememberCoroutineScope would be cancelled mid-flight
-    // ("Auto-enrollment failed. The coroutine left the composition."). appScope
-    // survives the teardown — same survival guarantee as MainActivity's
-    // lifecycleScope deep-link enroll path. appScope runs on Dispatchers.Default,
-    // so result toasts are marshalled back to the main thread.
-    val appCtx = app.applicationContext
-    app.appScope.launch {
-        val result = runCatching {
-            withContext(Dispatchers.IO) {
-                CSREnrollmentService(app.certVault).enroll(
-                    CSREnrollmentService.Config(
-                        host = cfg.host,
-                        enrollmentPort = cfg.enrollmentPort,
-                        username = cfg.username!!,
-                        password = cfg.password!!,
-                        trustSelfSigned = cfg.trustSelfSigned,
-                    ),
-                )
-            }
-        }
-        result.onSuccess { enrolled ->
-            app.serverManager.addServer(
-                TAKServer(
-                    name = cfg.name,
-                    host = cfg.host,
-                    port = cfg.port,
-                    protocol = ConnectionProtocol.TLS.wire,
-                    useTLS = true,
-                    username = cfg.username,
-                    // password is the login/enrollment credential, not the .p12 passphrase
-                    password = null,
-                    certificateName = enrolled.certificateName,
-                    certificatePassword = enrolled.certificatePassword,
-                    caCertificateName = enrolled.caCertificateName,
-                ),
-            )
-            withContext(Dispatchers.Main) {
-                Toast.makeText(
-                    appCtx,
-                    "Enrolled & connected: ${cfg.name}",
-                    Toast.LENGTH_LONG,
-                ).show()
-            }
-        }
-        result.onFailure { e ->
-            withContext(Dispatchers.Main) {
-                Toast.makeText(
-                    appCtx,
-                    "Enrollment failed: ${e.message ?: e.javaClass.simpleName}",
-                    Toast.LENGTH_LONG,
-                ).show()
-            }
-        }
-    }
 }

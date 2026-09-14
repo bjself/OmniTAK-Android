@@ -39,10 +39,12 @@ data class ImportedServerConfig(
     // CSR enrollment port (TAK default 8446). Used only when username +
     // password are present and the server speaks TLS — see [needsEnrollment].
     val enrollmentPort: Int = 8446,
-    // Trust-all during enrollment by default so a single QR works for both
-    // self-signed and publicly-trusted (Let's Encrypt) endpoints. Override
-    // with trust=ca / trustselfsigned=false on the link for strict validation.
-    val trustSelfSigned: Boolean = true,
+    // Strict certificate validation by default. Trust-all during enrollment
+    // (TakTls.configureUntrusted: no cert check, no hostname check) sends the
+    // Basic-auth secret over an unverified channel and pins whatever CA the
+    // peer returns, so it is an explicit opt-in via trust=true on the link,
+    // mirroring the default-off Quick Connect switch (audit 2026-09-14, M1).
+    val trustSelfSigned: Boolean = false,
 ) {
     /**
      * A TLS server with username + password can't connect with bare creds —
@@ -157,12 +159,9 @@ object DeepLinkImport {
             ?: uri.getQueryParameter("enrollmentport"))
             ?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 8446
 
-        // Trust-all during enrollment by default so a single QR onboards both
-        // self-signed (self-hosted TAK Server) and publicly-trusted (ArgusTAK
-        // behind Let's Encrypt) endpoints. Override with trust=ca on the link.
-        val trustRaw = (uri.getQueryParameter("trustselfsigned")
-            ?: uri.getQueryParameter("trust"))?.lowercase()
-        val trustSelfSigned = trustRaw !in setOf("false", "ca", "system", "0", "no")
+        val trustSelfSigned = trustSelfSignedFrom(
+            uri.getQueryParameter("trustselfsigned") ?: uri.getQueryParameter("trust"),
+        )
 
         val name = uri.getQueryParameter("name")?.takeIf { it.isNotBlank() } ?: host
 
@@ -239,9 +238,9 @@ object DeepLinkImport {
             ?: uri.getQueryParameter("enrollport"))
             ?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 8446
 
-        val trustRaw = (uri.getQueryParameter("trustselfsigned")
-            ?: uri.getQueryParameter("trust"))?.lowercase()
-        val trustSelfSigned = trustRaw !in setOf("false", "ca", "system", "0", "no")
+        val trustSelfSigned = trustSelfSignedFrom(
+            uri.getQueryParameter("trustselfsigned") ?: uri.getQueryParameter("trust"),
+        )
 
         return ImportedServerConfig(
             name = name,
@@ -255,6 +254,14 @@ object DeepLinkImport {
         )
     }
 
+    /**
+     * Decode the `trust` / `trustselfsigned` link parameter. Only an explicit
+     * affirmative turns trust-all enrollment on; absent, unknown, `ca`,
+     * `system`, `false`, `0`, `no` all mean strict validation.
+     */
+    fun trustSelfSignedFrom(raw: String?): Boolean =
+        raw?.trim()?.lowercase() in setOf("true", "1", "yes", "selfsigned", "self-signed")
+
     /** Convert an [ImportedServerConfig] to a [TAKServer] ready for the manager. */
     fun toServer(cfg: ImportedServerConfig): TAKServer = TAKServer(
         name = cfg.name,
@@ -265,4 +272,48 @@ object DeepLinkImport {
         username = cfg.username,
         password = cfg.password,
     )
+}
+
+/**
+ * What a deep link / QR will do if the user confirms it. Pure data so the
+ * confirmation dialog and the log line share one source of truth and the
+ * wording can be unit-tested (audit 2026-09-14, H3 / M12).
+ */
+data class ServerImportPreview(
+    val name: String,
+    val endpoint: String,
+    val username: String?,
+    val useTLS: Boolean,
+    val willEnroll: Boolean,
+    val trustSelfSigned: Boolean,
+    val warnings: List<String>,
+    val consequence: String,
+    /** Safe for logcat: never includes the password / enrollment token. */
+    val logLine: String,
+) {
+    companion object {
+        fun from(cfg: ImportedServerConfig): ServerImportPreview {
+            val warnings = buildList {
+                if (!cfg.useTLS) {
+                    add("This server uses an unencrypted TCP connection. Your position, markers, and chat will be sent in the clear.")
+                }
+                if (cfg.trustSelfSigned) {
+                    add("The link asks to skip certificate validation during enrollment. Only accept if you trust the network you are on right now.")
+                }
+            }
+            val endpoint = "${cfg.host}:${cfg.port}"
+            return ServerImportPreview(
+                name = cfg.name,
+                endpoint = endpoint,
+                username = cfg.username,
+                useTLS = cfg.useTLS,
+                willEnroll = cfg.needsEnrollment,
+                trustSelfSigned = cfg.trustSelfSigned,
+                warnings = warnings,
+                consequence = "OmniTAK will connect immediately and start sharing your position, markers, and chat with this server.",
+                logLine = "server import name='${cfg.name}' endpoint=$endpoint tls=${cfg.useTLS} " +
+                    "enroll=${cfg.needsEnrollment} trustSelfSigned=${cfg.trustSelfSigned}",
+            )
+        }
+    }
 }

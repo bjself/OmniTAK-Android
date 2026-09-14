@@ -276,11 +276,14 @@ fun MeshDeviceSettingsScreen(onDone: () -> Unit) {
                         // the radio drops mid-write.
                         store.update { toPush }
                         dirty = false
-                        val sent = mesh.pushDeviceConfig(toPush)
-                        savedToast = when (sent) {
-                            5 -> "Pushed all 5 settings to radio"
-                            0 -> "Push failed — check radio connection"
-                            else -> "Pushed $sent of 5 — radio dropped mid-write"
+                        val result = mesh.pushDeviceConfig(toPush)
+                        val sent = result.sent
+                        savedToast = when {
+                            sent == 0 -> "Push failed — check radio connection"
+                            sent < result.attempted -> "Pushed $sent of ${result.attempted} — radio dropped mid-write"
+                            result.channelSkipped ->
+                                "Pushed $sent settings; channel name skipped — tap Refresh to read the radio's channel key first"
+                            else -> "Pushed all $sent settings to radio"
                         }
                         // After push, refetch so the screen reflects what the
                         // radio actually accepted (some fields may be rejected).

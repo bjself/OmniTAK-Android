@@ -125,6 +125,11 @@ class MavlinkConnection {
     private val gcsSystemId = 255
     private val gcsComponentId = 190 // MAV_COMP_ID_MISSIONPLANNER
 
+    /** Vehicle sysid lock + drop counters, see [MavlinkPeerPolicy]. */
+    private val sysIdLock = MavlinkPeerPolicy.SysIdLock(gcsSystemId)
+    @Volatile private var droppedForeign = 0L
+    @Volatile private var droppedForeignSys = 0L
+
     /** UDP convenience overload (backwards-compatible). */
     fun connect(host: String, port: Int = DEFAULT_DRONE_PORT) =
         connect(Transport.UDP, host, port)
@@ -136,6 +141,9 @@ class MavlinkConnection {
     fun connect(transport: Transport, host: String, port: Int = DEFAULT_DRONE_PORT) {
         disconnect() // idempotent
         this.transport = transport
+        sysIdLock.reset()
+        droppedForeign = 0L
+        droppedForeignSys = 0L
 
         val s = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = s
@@ -197,6 +205,7 @@ class MavlinkConnection {
         tcpOut = null
         tcpConn = null
         transport = null
+        sysIdLock.reset()
 
         // Reset the StateFlow so the UI's isConnected() flips to false
         // immediately. Without this, lastHeartbeat is still recent and
@@ -256,13 +265,18 @@ class MavlinkConnection {
         val buf = ByteArray(280) // MAVLink 2 max frame size
         val packet = DatagramPacket(buf, buf.size)
         sock.receive(packet)
-        // First receive also tells us the drone's source port if the
-        // caller passed the wrong destination port (SITL is chatty about
-        // this — most ground stations rely on it).
-        if (udpAddress == null || packet.address != udpAddress) {
-            udpAddress = packet.address
-            udpPort = packet.port
+        // Only the configured peer may talk to us. We still learn the
+        // drone's source port from IT (SITL / mavlink-router answer from an
+        // ephemeral port), but a datagram from any other host is dropped
+        // rather than re-targeting the link (audit 2026-09-14, H5).
+        if (!MavlinkPeerPolicy.acceptDatagramFrom(udpAddress, packet.address)) {
+            droppedForeign++
+            if (droppedForeign == 1L || droppedForeign % 100 == 0L) {
+                Log.w(TAG, "dropping MAVLink from unexpected peer ${packet.address} (total $droppedForeign)")
+            }
+            return
         }
+        udpPort = MavlinkPeerPolicy.learnPort(udpAddress, packet.address, packet.port, udpPort)
         val inStream = ByteArrayInputStream(packet.data, 0, packet.length)
         val conn = DroneFleetConnection.create(inStream, ByteArrayOutputStream())
         var msg: MavlinkMessage<*>? = try { conn.next() } catch (_: Throwable) { return }
@@ -302,6 +316,15 @@ class MavlinkConnection {
     private fun apply(msg: MavlinkMessage<*>) {
         val sys = msg.originSystemId
         val comp = msg.originComponentId
+        // Lock onto the first vehicle that heartbeats; ignore every other
+        // sysid for the life of this connection (audit 2026-09-14, H5).
+        if (!sysIdLock.accept(sys, isHeartbeat = msg.payload is Heartbeat)) {
+            droppedForeignSys++
+            if (droppedForeignSys == 1L || droppedForeignSys % 100 == 0L) {
+                Log.w(TAG, "ignoring MAVLink from sysid $sys (locked=${sysIdLock.lockedSystemId}, total $droppedForeignSys)")
+            }
+            return
+        }
         when (val body = msg.payload) {
             is Heartbeat -> _state.update { st ->
                 val nowArmed = body.baseMode().flagsEnabled(MavModeFlag.MAV_MODE_FLAG_SAFETY_ARMED)

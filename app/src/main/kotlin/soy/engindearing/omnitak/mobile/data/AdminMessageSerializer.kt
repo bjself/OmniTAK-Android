@@ -211,36 +211,26 @@ object AdminMessageSerializer {
     }
 
     /**
-     * Build a ToRadio with `AdminMessage { set_channel { settings { name, ... } } }`
-     * for channel index 0. PSK is left at the firmware-default for the
-     * preset; we only set the human-readable name. Preset goes through
-     * `set_config { lora { use_preset = true, modem_preset = ... } }`
-     * — see [buildSetLoraPreset]. Two messages because Meshtastic
-     * splits channel and modem config across two protobuf submessages.
+     * Build `set_channel` for the primary channel (index 0) that renames it
+     * to [name] while echoing back the PSK and uplink/downlink flags the
+     * radio currently reports in [current].
+     *
+     * `set_channel` replaces the entire Channel struct in the firmware, and a
+     * primary channel whose PSK is empty means "encryption off", so a
+     * name-only write would silently strip encryption. Returns null when
+     * [current] carries no PSK, so callers cannot accidentally send an
+     * unencrypted primary (audit 2026-09-14, H4). Preset goes separately via
+     * [buildSetLoraPreset].
      */
-    fun buildSetChannel0Name(myNodeNum: UInt, name: String): ByteArray {
-        // ChannelSettings.name = field 3, string.
-        val settings = ByteArrayOutputStream().apply {
-            appendString(this, field = 3, value = name)
-        }.toByteArray()
-        // Channel.index = 1 (varint, default 0 means primary), settings = field 2.
-        val channel = ByteArrayOutputStream().apply {
-            // Index 0 — the primary channel.
-            MeshWire.appendVarintField(this, field = 1, value = 0UL)
-            // Settings submessage at field 2.
-            MeshWire.appendTag(this, field = 2, wire = 2)
-            MeshWire.appendVarint(this, settings.size.toULong())
-            write(settings)
-            // Channel.role = field 3, varint. PRIMARY = 1.
-            MeshWire.appendVarintField(this, field = 3, value = 1UL)
-        }.toByteArray()
-        // AdminMessage.set_channel = field 33.
-        val admin = ByteArrayOutputStream().apply {
-            MeshWire.appendTag(this, field = 33, wire = 2)
-            MeshWire.appendVarint(this, channel.size.toULong())
-            write(channel)
-        }.toByteArray()
-        return wrapToRadio(admin, myNodeNum)
+    fun buildSetPrimaryChannel(myNodeNum: UInt, name: String, current: AdminResponse.Channel): ByteArray? {
+        if (current.psk.isEmpty()) return null
+        val channel = MeshChannel(
+            name = name,
+            psk = current.psk,
+            uplinkEnabled = current.uplinkEnabled,
+            downlinkEnabled = current.downlinkEnabled,
+        )
+        return buildSetChannel(myNodeNum, channel, index = 0)
     }
 
     // region Read requests ----------------------------------------------

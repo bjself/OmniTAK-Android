@@ -88,7 +88,13 @@ object ChatXml {
      * not a chat message or is malformed. Direct-message detection
      * uses the chatroom name against ATAK's canonical broadcast label.
      */
-    fun parse(xml: String, selfUid: String? = null, serverId: String? = null): ChatMessage? {
+    fun parse(xml: String, selfUid: String? = null, serverId: String? = null): ChatMessage? =
+        // This is the first call on every frame from a TAK server. A malformed
+        // frame must degrade to "not a chat", never propagate out of the
+        // receive collector and kill the process (audit 2026-09-14, M2).
+        runCatching { doParse(xml, selfUid, serverId) }.getOrNull()
+
+    private fun doParse(xml: String, selfUid: String?, serverId: String?): ChatMessage? {
         val factory = XmlPullParserFactory.newInstance().apply { isNamespaceAware = false }
         val parser = factory.newPullParser()
         parser.setInput(StringReader(xml))
@@ -143,6 +149,11 @@ object ChatXml {
 
         if (type != "b-t-f") return null
         val finalSenderUid = senderUid ?: inferSenderUidFromEventUid(eventUid) ?: return null
+        // A frame claiming to be from us is either an echo of our own message
+        // (mesh rebroadcast) or a spoof; either way it must not be rendered
+        // as ours. Ownership is asserted only by ChatStore.markOutgoing
+        // (audit 2026-09-14, M3).
+        if (selfUid != null && finalSenderUid == selfUid) return null
         val finalSenderCallsign = senderCallsign ?: return null
         val finalText = remarks ?: return null
 
@@ -174,7 +185,7 @@ object ChatXml {
             text = finalText,
             timeIso = eventTime ?: CotXml.isoMillis(),
             status = ChatStatus.RECEIVED,
-            isFromSelf = selfUid != null && finalSenderUid == selfUid,
+            isFromSelf = false,
             serverId = serverId,
         )
     }

@@ -42,10 +42,12 @@ import kotlinx.coroutines.launch
 import soy.engindearing.omnitak.mobile.OmniTAKApp
 import soy.engindearing.omnitak.mobile.data.UserPrefs
 import soy.engindearing.omnitak.mobile.domain.LassoSelectionService
+import soy.engindearing.omnitak.mobile.domain.ServerOnboarding
 import soy.engindearing.omnitak.mobile.ui.components.BarCommand
 import soy.engindearing.omnitak.mobile.ui.components.BarItem
 import soy.engindearing.omnitak.mobile.ui.components.BarKind
 import soy.engindearing.omnitak.mobile.ui.components.CustomToolbar
+import soy.engindearing.omnitak.mobile.ui.components.ServerImportConfirmDialog
 import soy.engindearing.omnitak.mobile.ui.components.ToolbarAddPalette
 import soy.engindearing.omnitak.mobile.ui.components.ToolbarCatalog
 import soy.engindearing.omnitak.mobile.ui.components.ToolbarEditBus
@@ -542,6 +544,20 @@ fun AppNav() {
                 }
             },
             onDismiss = { app.pendingProfileImport.value = null },
+        )
+    }
+
+    // Deep-link / QR server import — never add or connect without the user
+    // seeing where the device is about to send its position (H3).
+    val pendingServer by app.pendingServerImport.collectAsState()
+    pendingServer?.let { cfg ->
+        ServerImportConfirmDialog(
+            cfg = cfg,
+            onConfirm = {
+                app.pendingServerImport.value = null
+                ServerOnboarding.addConfirmed(app, cfg)
+            },
+            onDismiss = { app.pendingServerImport.value = null },
         )
     }
 }
