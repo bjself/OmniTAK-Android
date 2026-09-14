@@ -638,8 +638,13 @@ private suspend fun sendChatInner(
     val meshState = activeMesh.activeConnectionState.value
     val latestPrefs = app.userPrefsStore.prefs.first()
     var meshSent = false
-    if (meshState is soy.engindearing.omnitak.mobile.domain.ConnectionState.Connected &&
-        latestPrefs.broadcastOverMesh
+    // M4 — only group rooms fan out; a 1:1 server DM must never be
+    // re-broadcast to every node on the mesh channel.
+    if (soy.engindearing.omnitak.mobile.domain.ChatMeshFanout.shouldFanOut(
+            convoIsGroup = convo.isGroup,
+            meshConnected = meshState is soy.engindearing.omnitak.mobile.domain.ConnectionState.Connected,
+            broadcastOverMesh = latestPrefs.broadcastOverMesh,
+        )
     ) {
         val meshCotEvent = CoTEvent(
             uid = "GeoChat.${senderUid}.${ChatRoom.ALL_USERS}.${generated.messageId}",
