@@ -517,7 +517,13 @@ object MeshtasticProtoParser {
             1 -> minOf(offset + 8, buf.size)
             2 -> {
                 val (len, lenEnd) = readVarint(buf, offset) ?: return offset + 1
-                minOf(lenEnd + len.toInt(), buf.size)
+                // A length that does not fit the remaining buffer (including
+                // one whose low 32 bits are negative, e.g. 0xFFFFFFFA) can
+                // only mean a truncated or hostile frame. Never move
+                // backwards: clamp to the buffer end so the caller's loop
+                // terminates (audit 2026-09-14, H2).
+                val remaining = (buf.size - lenEnd).toULong()
+                if (len > remaining) buf.size else lenEnd + len.toInt()
             }
             5 -> minOf(offset + 4, buf.size)
             else -> offset + 1
