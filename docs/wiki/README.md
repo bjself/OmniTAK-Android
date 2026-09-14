@@ -6,7 +6,7 @@ Reference for people and AI agents working in this repository. Everything here w
 
 | Page | Read it when |
 |---|---|
-| [security-audit.md](security-audit.md) | Before touching input parsing, TLS, deep links, mesh, or UAS. Full 2026-09-14 audit with findings, fix order, and the complete list of network destinations. |
+| [security-audit.md](security-audit.md) | Before touching input parsing, TLS, deep links, mesh, or UAS. Full 2026-09-14 audit with findings, remediation status per finding, and the complete list of network destinations. |
 | [build-and-release.md](build-and-release.md) | Building, testing, signing, CI, dependency list, secrets handling. |
 | [networking-and-tls.md](networking-and-tls.md) | TAK server connections, trust policy, certificate enrollment, credential storage, reconnect. |
 | [parsers-and-imports.md](parsers-and-imports.md) | CoT XML model, deep-link and QR onboarding flows, KML / raster / MBTiles / iconset import, persistence formats. |
