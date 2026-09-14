@@ -33,6 +33,7 @@ import soy.engindearing.omnitak.mobile.data.MeshRegion
 import soy.engindearing.omnitak.mobile.data.RebroadcastMode
 import soy.engindearing.omnitak.mobile.data.AtakPluginSerializer
 import soy.engindearing.omnitak.mobile.data.CoTEvent
+import soy.engindearing.omnitak.mobile.data.DevicePushPlanner
 import soy.engindearing.omnitak.mobile.data.TakPacketParser
 import soy.engindearing.omnitak.mobile.data.TakPacketSerializer
 import soy.engindearing.omnitak.mobile.data.TakPacketV2Codec
@@ -300,6 +301,7 @@ class MeshtasticManager(private val context: Context? = null) : MeshFrameworkMan
         frameCollector?.cancel()
         frameCollector = null
         _activeTransport.value = null
+        knownPrimaryChannel = null
     }
 
     private fun dispatchFrame(frame: ByteArray) {
@@ -319,6 +321,7 @@ class MeshtasticManager(private val context: Context? = null) : MeshFrameworkMan
             }
             is FromRadioFrame.ChannelFrame -> {
                 Log.i(TAG, "RX FromRadio.channel: ${parsed.response}")
+                rememberChannel(parsed.response)
                 runCatching { adminResponseSink?.invoke(parsed.response) }
                     .onFailure { Log.w(TAG, "adminResponseSink (channel) failed: ${it.message}") }
             }
@@ -418,6 +421,7 @@ class MeshtasticManager(private val context: Context? = null) : MeshFrameworkMan
                 val response = AdminMessageParser.parse(packet.payload)
                 if (response != null) {
                     Log.i(TAG, "RX admin response: $response")
+                    rememberChannel(response)
                     runCatching { adminResponseSink?.invoke(response) }
                         .onFailure { Log.w(TAG, "adminResponseSink failed: ${it.message}") }
                 } else {
@@ -657,26 +661,42 @@ class MeshtasticManager(private val context: Context? = null) : MeshFrameworkMan
      * back as `FromRadio.routing` frames and would need protobuf decode
      * we haven't built yet (filed under GAP-109b).
      */
-    suspend fun pushDeviceConfig(config: MeshDeviceConfig): Int {
-        val transport = _activeTransport.value ?: return 0
-        val dest = adminDestination() ?: return 0
+    suspend fun pushDeviceConfig(config: MeshDeviceConfig): DevicePushResult {
+        val transport = _activeTransport.value ?: return DevicePushResult(0, 0, channelSkipped = false)
+        val dest = adminDestination() ?: return DevicePushResult(0, 0, channelSkipped = false)
 
-        val messages = listOf(
-            AdminMessageSerializer.buildSetOwner(dest, config.longName, config.shortName),
-            AdminMessageSerializer.buildSetDeviceRole(dest, config.role),
-            AdminMessageSerializer.buildSetPositionBroadcastSecs(dest, config.positionBroadcastSecs),
-            AdminMessageSerializer.buildSetChannel0Name(dest, config.channelName),
-            AdminMessageSerializer.buildSetLoraPreset(dest, config.channelPreset),
-        )
+        // The primary-channel rename is only sent when we hold the radio's
+        // current PSK to echo back; set_channel replaces the whole struct and
+        // an empty primary PSK means encryption off (audit 2026-09-14, H4).
+        val plan = DevicePushPlanner.plan(dest, config, knownPrimaryChannel)
+        if (plan.channelSkipped) {
+            Log.w(TAG, "pushDeviceConfig: primary channel PSK not yet read from radio — skipping channel rename")
+        }
         var sent = 0
-        for (bytes in messages) {
+        for (bytes in plan.frames) {
             val ok = when (transport) {
                 MeshConnectionType.TCP -> tcpClient.sendBytes(bytes)
                 MeshConnectionType.BLUETOOTH -> bleClient?.sendToRadio(bytes) ?: false
             }
             if (ok) sent += 1 else break // bail on first failure so we don't wedge mid-write
         }
-        return sent
+        return DevicePushResult(sent = sent, attempted = plan.frames.size, channelSkipped = plan.channelSkipped)
+    }
+
+    /** Outcome of [pushDeviceConfig] for the Device Settings toast. */
+    data class DevicePushResult(val sent: Int, val attempted: Int, val channelSkipped: Boolean)
+
+    /**
+     * Last primary-channel report from the attached radio (FromRadio.channel
+     * at connect, or a get_channel_response). Holds the PSK we must echo on
+     * a rename. Cleared on disconnect. Never logged.
+     */
+    @Volatile private var knownPrimaryChannel: AdminResponse.Channel? = null
+
+    private fun rememberChannel(response: AdminResponse) {
+        if (response is AdminResponse.Channel && (response.index == 0 || response.isPrimary)) {
+            knownPrimaryChannel = response
+        }
     }
 
     /**
